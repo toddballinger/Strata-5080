@@ -74,9 +74,10 @@ The client may still apply its own allowlist, but Strata no longer relies on tha
 
 Before calling the CPU corpus complete:
 
-1. pin the OpenClaw-relevant output-limit case where a valid declared call is followed by a later cut call;
-2. run the complete relevant unittest set, including the existing server/Responses suites and the new compatibility suite;
-3. retain any newly demonstrated failure as a minimal regression before fixing it.
+1. run the complete relevant unittest set, including the existing server/Responses suites and the new compatibility suite;
+2. retain any newly demonstrated failure as a minimal regression before fixing it.
+
+The existing `UnfinishedToolCall` coverage already pins token-limit cut calls and preservation of a valid complete call when a later streamed call is incomplete, so the fork does not duplicate that case.
 
 ## Remaining target work
 
