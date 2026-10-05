@@ -192,18 +192,39 @@ def nvidia_sample() -> dict[str, Any] | None:
     }
 
 
+def compact_metrics(m: dict[str, Any]) -> dict[str, Any]:
+    """Keep high-frequency evidence bounded even for long-context runs."""
+    engine = m.get("engine") or {}
+    return {
+        "engine": {
+            k: engine.get(k)
+            for k in (
+                "model", "max_context", "engine", "batch_slots", "expert_slots",
+                "vram_free_mib", "vram", "vram_elastic"
+            )
+            if k in engine
+        },
+        "live": m.get("live") or {},
+        "hardware": m.get("hardware") or {},
+        "conversation_cache": m.get("conversation_cache") or {},
+    }
+
+
 def sampler(base: str, key: str, stop: threading.Event, metrics: list[dict[str, Any]],
             gpu: list[dict[str, Any]]) -> None:
+    next_gpu = 0.0
     while not stop.is_set():
         t = time.time()
         try:
             m = http_json(base, "/metrics", key, timeout=2)
-            metrics.append({"at": t, "data": m})
+            metrics.append({"at": t, "data": compact_metrics(m)})
         except Exception as e:
             metrics.append({"at": t, "error": f"{type(e).__name__}: {e}"})
-        g = nvidia_sample()
-        if g:
-            gpu.append(g)
+        if t >= next_gpu:
+            g = nvidia_sample()
+            if g:
+                gpu.append(g)
+            next_gpu = t + 1.0
         stop.wait(SAMPLE_INTERVAL_S)
 
 
