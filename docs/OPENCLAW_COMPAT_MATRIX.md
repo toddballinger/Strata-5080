@@ -29,9 +29,9 @@ The goal is to qualify Strata as an agent backend without duplicating tests the 
 | Lifecycle | C1→C2→C1 state transition | existing batching/interleave tests | COVERED, RTX qualification in #2 |
 | Lifecycle | cancel one concurrent lane | existing early-close/batch logic | COVERED, RTX qualification in #2 |
 | Prefix | late system/developer keeps history prefix in place | implementation explicitly designed for this | COVERED structurally; measure reuse on RTX |
-| Empty assistant | client-specific OpenClaw empty-turn corpus | not yet isolated | TODO |
+| Empty assistant | OpenClaw-shaped empty turn + later developer reminder | `serve/test_openclaw_compat.py` | ADDED ON BRANCH |
 | Finish semantics | OpenClaw-specific output-limit/tool cut-off combinations | partial upstream coverage | TODO |
-| Responses route | benign query string | generic route handling appears shared | TODO explicit regression |
+| Responses route | benign `/v1/responses?beta=true` query string | `serve/test_openclaw_compat.py` | ADDED ON BRANCH |
 | Real agent loop | OpenClaw tool loop on target model | hardware/integration | TODO |
 
 ## New safety boundary
@@ -74,10 +74,9 @@ The client may still apply its own allowlist, but Strata no longer relies on tha
 
 Before calling the CPU corpus complete:
 
-1. add an explicit Responses query-string regression;
-2. add an OpenClaw-shaped empty-assistant/history fixture;
-3. pin output-limit behavior where a valid call is followed by a cut call;
-4. run the complete relevant unittest set.
+1. pin the OpenClaw-relevant output-limit case where a valid declared call is followed by a later cut call;
+2. run the complete relevant unittest set, including the existing server/Responses suites and the new compatibility suite;
+3. retain any newly demonstrated failure as a minimal regression before fixing it.
 
 ## Remaining target work
 
