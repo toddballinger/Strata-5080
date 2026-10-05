@@ -25,7 +25,7 @@ Primary target:
 
 ## Priority queue
 
-### P1-A — C1/C2 concurrency qualification
+### P1-A — C1/C2 concurrency qualification — #2
 
 Question:
 
@@ -59,9 +59,9 @@ Secondary metrics:
 - transition latency
 - tool-call correctness
 
-### P1-B — Concurrency memory planner
+### P1-B — Concurrency memory planner — #3
 
-Blocked on P1-A evidence.
+Blocked on #2 evidence.
 
 If C2 is useful but loses too much expert residency, evaluate the smallest change that improves the memory operating point.
 
@@ -97,7 +97,7 @@ Hard requirements:
 - cancellation preserves surviving lane
 - no behaviour change when concurrency is disabled
 
-### P1-C — OpenClaw compatibility qualification
+### P1-C — OpenClaw compatibility qualification — #4
 
 Build a reusable agent/API compatibility corpus before hardening code.
 
@@ -123,7 +123,7 @@ At least one fixture/oracle must be independently derived from the production pa
 
 Compatibility normalization must be measured for prefix-reuse side effects.
 
-### P2-A — Hybrid semantic execution
+### P2-A — Hybrid semantic execution — #5
 
 Research whether Strata can skip autoregressive rounds for output whose exact token sequence is already known.
 
