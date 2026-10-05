@@ -118,7 +118,7 @@ class OpenClawRequestShapes(unittest.TestCase):
         messages, _tools, _kw = openai_to_messages(req)
         self.assertEqual([m["role"] for m in messages],
                          ["system", "user", "assistant", "user", "user"])
-        self.assertEqual(messages[2]["content"], [])
+        self.assertEqual(messages[2]["content"], "")
         self.assertEqual(messages[3]["content"], "Later reminder.")
 
         status, body = self.post("/v1/chat/completions", {
