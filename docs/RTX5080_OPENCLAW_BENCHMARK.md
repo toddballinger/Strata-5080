@@ -110,3 +110,57 @@ Every benchmark report should include:
 - median and range
 - failures
 - decision: PROMOTE / DEFER / REJECT
+
+
+## Issue #2 HTTP harness
+
+`tools/rtx5080_openclaw_bench.py` exercises the same HTTP service path used by OpenAI-compatible agent clients.
+
+It deliberately launches **two requests simultaneously in both C1 and C2**:
+
+- C1 shows the real queueing cost when one worker must wait.
+- C2 shows the real batch-slot admission/decoding behaviour.
+- The script refuses to run if `GET /v1/status` does not report the expected `concurrency.serving` value.
+
+The harness polls `/metrics` every 200 ms during the campaign and samples the first NVIDIA GPU with `nvidia-smi`. It writes:
+
+- a machine-readable JSON evidence record containing before/after status, sampled metrics, request timing and GPU telemetry;
+- a compact Markdown summary beside it.
+
+### First-pass short-context arms
+
+Start Strata in the intended configuration before each arm.
+
+```bash
+python3 tools/rtx5080_openclaw_bench.py --arm c1 --expect-serving 1 --tag short-r1
+python3 tools/rtx5080_openclaw_bench.py --arm c2 --expect-serving 2 --tag short-r1
+```
+
+Repeat at least three times per arm before interpreting small differences.
+
+### Context sweep
+
+The synthetic-history fixture is deterministic. `--target-prompt-tokens` is an approximate construction target; the server's own prompt-token accounting in the JSON evidence is authoritative.
+
+```bash
+python3 tools/rtx5080_openclaw_bench.py --arm c1 --expect-serving 1 --target-prompt-tokens 8192  --tag p8k-r1
+python3 tools/rtx5080_openclaw_bench.py --arm c2 --expect-serving 2 --target-prompt-tokens 8192  --tag p8k-r1
+python3 tools/rtx5080_openclaw_bench.py --arm c1 --expect-serving 1 --target-prompt-tokens 32000 --tag p32k-r1
+python3 tools/rtx5080_openclaw_bench.py --arm c2 --expect-serving 2 --target-prompt-tokens 32000 --tag p32k-r1
+python3 tools/rtx5080_openclaw_bench.py --arm c1 --expect-serving 1 --target-prompt-tokens 64000 --tag p64k-r1
+python3 tools/rtx5080_openclaw_bench.py --arm c2 --expect-serving 2 --target-prompt-tokens 64000 --tag p64k-r1
+python3 tools/rtx5080_openclaw_bench.py --arm c1 --expect-serving 1 --target-prompt-tokens 118000 --tag p118k-r1
+python3 tools/rtx5080_openclaw_bench.py --arm c2 --expect-serving 2 --target-prompt-tokens 118000 --tag p118k-r1
+```
+
+The C4 arm remains intentionally gated until the C2 result is safe and useful.
+
+### Existing correctness tests remain authoritative
+
+The HTTP harness supplements rather than replaces the existing engine/server tests:
+
+- `tools/batch_test.py` — solo vs slot token exactness and aggregate batch rate;
+- `tools/batch_interleave_test.py` — prompt interleave, yield, retained conversation state and return to solo MTP;
+- `tools/early_close_test.py` — cancellation/client disconnect isolation.
+
+A performance result should not be promoted if these correctness paths fail on the candidate configuration.
