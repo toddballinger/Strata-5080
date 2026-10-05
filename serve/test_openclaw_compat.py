@@ -7,13 +7,20 @@ tool calls whose names were declared by the caller.
 """
 from __future__ import annotations
 
+import contextlib
+import http.client
+import io
+import json
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from serve.frontend import OutputParser  # noqa: E402
+from serve.frontend import ChatTemplate, OutputParser, openai_to_messages  # noqa: E402
+from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 DECLARED = [{
@@ -61,6 +68,63 @@ def parse(text: str, tools, stream_tools: bool, step: int):
         events += p.feed(text[i:i + step])
     events += p.finish()
     return events
+
+
+class OpenClawRequestShapes(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = MockEngine(tok, "</think>\n\nok", max_context=16384)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.port = cls.httpd.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, path, body):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                conn.request("POST", path, body=json.dumps(body).encode(),
+                             headers={"Content-Type": "application/json",
+                                      "anthropic-version": "2023-06-01"})
+                r = conn.getresponse()
+                raw = r.read().decode()
+            return r.status, json.loads(raw)
+        finally:
+            conn.close()
+
+    def test_responses_accepts_benign_query_string(self):
+        status, body = self.post("/v1/responses?beta=true", {
+            "model": "m", "input": "reply with ok", "store": False,
+            "reasoning": {"effort": "none"},
+        })
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["object"], "response")
+
+    def test_empty_assistant_turn_keeps_later_messages_in_place(self):
+        req = {
+            "messages": [
+                {"role": "system", "content": "Be concise."},
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": ""},
+                {"role": "developer", "content": "Later reminder."},
+                {"role": "user", "content": "second"},
+            ]
+        }
+        messages, _tools, _kw = openai_to_messages(req)
+        self.assertEqual([m["role"] for m in messages],
+                         ["system", "user", "assistant", "user", "user"])
+        self.assertEqual(messages[2]["content"], [])
+        self.assertEqual(messages[3]["content"], "Later reminder.")
+
+        status, body = self.post("/v1/chat/completions", {
+            "model": "m", "max_tokens": 20, **req,
+        })
+        self.assertEqual(status, 200, body)
 
 
 class DeclaredToolBoundary(unittest.TestCase):
