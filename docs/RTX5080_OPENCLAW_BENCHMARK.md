@@ -164,3 +164,23 @@ The HTTP harness supplements rather than replaces the existing engine/server tes
 - `tools/early_close_test.py` — cancellation/client disconnect isolation.
 
 A performance result should not be promoted if these correctness paths fail on the candidate configuration.
+
+
+### Compare repetitions
+
+After collecting repeated C1/C2 JSON evidence, summarize the medians and ranges instead of comparing individual runs:
+
+```bash
+python3 tools/rtx5080_compare.py "bench/results/rtx5080/*.json" \
+    --output bench/results/rtx5080/COMPARE.md
+```
+
+The comparator reports:
+- C1/C2 campaign median and range;
+- median TTFT;
+- median observed peak VRAM;
+- failures and serving-mode mismatches;
+- maximum non-idle slots actually observed;
+- C2-vs-C1 two-worker wall-time speedup and reduction.
+
+It intentionally does **not** emit an automatic PROMOTE/REJECT decision. Correctness, memory headroom and long-context evidence remain part of the issue #2 gate.
