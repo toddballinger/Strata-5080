@@ -500,6 +500,12 @@ class OutputParser:
                 if b < 0:
                     return out
                 name = rest[a + 10:b]
+                # Agent safety boundary (#4 in Strata-5080): only calls to tools offered in this
+                # request are executable.  Do not stream an undeclared name/arguments to the client
+                # and rely on the client to reject it.
+                if name not in self.schemas:
+                    self.ss = "blocked"
+                    return out
                 self.scall = ToolCall(name=name, arguments={})
                 props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
                 self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
@@ -529,6 +535,8 @@ class OutputParser:
                     self.ss = "done"
                 else:
                     return out          # a tag still arriving (or trailing text): wait
+            elif self.ss == "blocked":
+                return out
             elif self.ss == "str":
                 if not self.sval_started:
                     if not rest:
@@ -650,6 +658,12 @@ class OutputParser:
                 body = self.buf[:i]
                 self.buf = self.buf[i + len(CALL_END):]
                 name = body.strip()[len("<function="):].split(">", 1)[0]
+                if name not in self.schemas:
+                    # The model may hallucinate a syntactically valid call to a tool the caller
+                    # never declared.  Suppress it as a capability request, not an executable call.
+                    self._reset_scan()
+                    self.state, self.lead = "content", True
+                    continue
                 call = parse_tool_call(body, self.schemas.get(name))
                 if self.scall is not None:
                     call.id = self.scall.id
@@ -661,6 +675,17 @@ class OutputParser:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
         already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211)."""
         out = []
+        if self.state == "call":
+            # If the model ended inside a call whose name is already known and that name was
+            # never offered by the caller, suppress the unfinished markup too.  A declared
+            # unfinished call retains the existing partial-call semantics below.
+            s = self.buf.lstrip()
+            if s.startswith("<function=") and ">" in s:
+                name = s[len("<function="):s.index(">")]
+                if name not in self.schemas:
+                    self.buf = ""
+                    self._reset_scan()
+                    return out
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
