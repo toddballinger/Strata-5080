@@ -132,6 +132,130 @@ The first implementation question is therefore not “how do we bypass the model
 
 > Can the existing commit/state-advance machinery be driven with a caller-authoritative token while still executing every state update the model requires?
 
+
+
+## Stronger finding: Strata already has bulk teacher-forced state advancement
+
+A deeper trace of `src/program/generate.cpp` and `include/strata/core/verify.hpp` found that the core state primitive #5 needs is **already present for prompt continuation**.
+
+The serve prompt path contains `read_windows(a, b)`, described in source as:
+
+> tokens [a, b) through the windows: commit all of them, then give the draft layer their residuals
+
+Its behavior is:
+
+1. disable verifier head sampling with `set_head_sampling(false)`;
+2. pack up to `T` exact caller-supplied tokens into a verifier window;
+3. call `Verifier::run(T, win, position, ...)`;
+4. discard the verifier's token picks because the input tokens are authoritative;
+5. call `Verifier::commit(T)`, committing **every supplied token**;
+6. call `mtp.prefill(ver.final_R_all(), nxt, T, position, ...)` so the MTP drafter is advanced through the same known sequence;
+7. call `wait_commit()` before anything else reads the session.
+
+The verifier header documents why this is state-correct:
+
+- `run()` appends QSA K/V and indexer keys for the whole candidate window and records the intermediate state needed for commit;
+- `commit(n_keep)` advances GDN recurrent/conv state for the accepted prefix;
+- it repairs the QSA indexer tail and re-appends accepted keys;
+- it restores PLE history to the snapshot corresponding to the committed prefix;
+- rejected speculative state remains overwriteable beyond the committed frontier.
+
+This is materially stronger than the earlier reasoning-budget observation.
+
+### Consequence
+
+The #5 problem is no longer:
+
+> Can Strata advance exact known tokens at all?
+
+The source already shows that it can, in bulk, on the prompt/teacher-forced path.
+
+The new engineering question is:
+
+> Can that existing teacher-forced verifier-window path be invoked safely **at the live generation frontier**, without turning the known suffix into an ordinary prompt replay and without breaking the current-token / next-token semantics of decode?
+
+That is a substantially narrower problem.
+
+## Revised K1 / K-N design target
+
+The preferred implementation should reuse the same semantic sequence already proven by `read_windows`:
+
+```text
+exact known tokens
+      ↓
+Verifier::run(T), head sampling OFF
+      ↓
+Verifier::commit(T)
+      ↓
+mtp.prefill(final_R, known-next-token sequence)
+      ↓
+wait_commit at required ownership boundary
+      ↓
+resume ordinary MTP decode
+```
+
+The prototype should **not** create a second state-update implementation unless the existing verifier/prefill path cannot be safely entered at the live frontier.
+
+### Frontier problem that still needs proof
+
+Ordinary decode treats the current token as `window[0]` and the verifier produces the next-token outputs. Prompt teacher forcing already knows both the current token window and its following `nxt` sequence.
+
+For a mid-generation known block, the protocol must define exactly:
+
+- which token is already committed at the frontier;
+- which known token is the next token to consume;
+- the `pos0` supplied to `Verifier::run`;
+- the `win[]` sequence;
+- the `nxt[]` sequence passed to `mtp.prefill`;
+- which final known token becomes the current token from which ordinary decode resumes.
+
+An off-by-one error here could yield plausible text while corrupting session state, so this mapping is the next required design artifact.
+
+## Revised smallest experiment
+
+### K1-F — one token at the live frontier
+
+Start from a live session at a known decode frontier and choose a token that the control run will consume next.
+
+Compare:
+
+**Control**
+```text
+ordinary decode/verify consumes token X
+ordinary MTP continues
+```
+
+**K1-F**
+```text
+existing teacher-forced verifier path consumes the same X
+MTP is prefilled/repaired through X
+ordinary MTP continues
+```
+
+Require exact subsequent greedy continuation and the state invariants already listed.
+
+### K-N-F — only after K1-F
+
+If K1-F passes, feed a known block using the existing `T`-token teacher-forced windows rather than one host round per token.
+
+That is where a meaningful speedup may exist: the verifier already amortizes dense-weight reads and expert work across a multi-token window.
+
+## Revised feasibility conclusion
+
+**The native state-advance mechanism is already demonstrated inside Strata.**
+
+The remaining uncertainty is integration, not fundamental state evolution:
+
+1. expose/reuse it at the live decode frontier;
+2. prove frontier/off-by-one semantics;
+3. preserve checkpoint/session ownership;
+4. measure transition overhead;
+5. prove warm MTP continuation;
+6. then decide whether deterministic spans are common enough in OpenClaw to justify exposing the mechanism.
+
+This raises #5's technical feasibility materially, while leaving the value gate unchanged.
+
+
 ## What cannot be skipped
 
 A correct known-token transition may avoid:
@@ -324,19 +448,19 @@ If the upper bound is small, keep #5 as research and do not complicate the engin
 
 ## Current conclusion
 
-**Feasible enough to justify K1 research, not enough to justify a production implementation.**
+**Technically more feasible than first assessed: the bulk exact-token state-advance primitive already exists for teacher-forced prompt windows, but live-frontier integration and value still need proof.**
 
 Reasons:
 
 - Strata already supports deterministic server text being inserted into an in-flight continuation without full-prefix replay.
 - Strata already restores session state across slot→solo transitions and resumes MTP.
 - The live sequence state is complex enough that token-id insertion alone is invalid.
-- The verifier has explicit commit machinery that is the best first place to investigate.
+- The prompt teacher-forcing path already drives verifier windows with head sampling disabled, commits every supplied token, and advances MTP with `mtp.prefill`; this is the preferred primitive to reuse.
 - Current structured output is prompt+validate, not grammar-constrained decoding, so there is no existing general known-block executor to simply expose.
 
 ## Next permitted work
 
-1. instrument deterministic-span frequency on representative agent outputs;
-2. map the verifier's accepted-token commit call path in detail;
-3. specify K1 protocol/API as experimental and disabled by default;
-4. only then implement K1 on a dedicated follow-up PR.
+1. specify the exact live-frontier `win[]` / `nxt[]` / position mapping by comparison with `read_windows` and ordinary decode;
+2. instrument deterministic-span frequency on representative agent outputs;
+3. specify K1-F protocol/API as experimental and disabled by default;
+4. only then implement K1-F on a dedicated follow-up PR using the existing teacher-forced verifier + MTP-prefill path.
