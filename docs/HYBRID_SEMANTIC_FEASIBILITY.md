@@ -377,6 +377,84 @@ The key value question is whether the state path can amortize host orchestration
 
 If N known tokens still require N nearly identical target rounds, complexity is unlikely to pay.
 
+
+## Live-frontier token accounting
+
+The generation loop makes the frontier semantics explicit.
+
+Before a verify round:
+
+```text
+p = position of current token x
+x = last prompt token initially, then the last token emitted by the previous round
+session state = committed through position p - 1
+```
+
+The verifier receives `window[0] = x`; accepted `window[0..a]` are made permanent by `Verifier::commit(a + 1)`.
+The model outputs `outv[0..a]`, then the loop sets `x = outv[a]` and advances `p += a + 1`.
+
+So the **last emitted output token is the next uncommitted frontier token**. The session is not advanced through it until the next verify window.
+
+### Consequence for a known block
+
+Suppose ordinary generation has just emitted frontier token `x`, and the application already knows the following serialized tokens must be `k1, k2, ... kN`.
+
+A correct transition cannot begin by teacher-forcing `k1` at `p`, because the session has not yet consumed `x`.
+
+```text
+input tokens to consume:  x,  k1, k2, ... k(N-1)
+next-token sequence:      k1, k2, k3, ... kN
+positions:                p, p+1, ... p+N-1
+```
+
+After committing those N input tokens, session state is committed through `k(N-1)`, `kN` is the new emitted/current frontier token, and ordinary decode can resume with `x = kN`, `p = p + N`.
+
+For **K1** (one known next token `k1`):
+
+```text
+Verifier::run(1, [x], p, ...)
+ignore sampled outv[0]
+Verifier::commit(1)
+MTP state advances with known next token k1
+emit k1
+set x = k1
+p += 1
+resume ordinary decode
+```
+
+The prompt teacher-forcing path uses `mtp.prefill(final_R_all, nxt, T, q)` where `nxt` is the known token following each consumed input row. For K1 this strongly suggests `nxt=[k1]`; for K-N it suggests `nxt=[k1..kN]`. This must be proven against a control run before any public protocol is exposed.
+
+### K-N mapping candidate
+
+For a known block, the existing verifier window can potentially consume:
+
+```text
+win = [x, k1, ..., k(T-1)]
+nxt = [k1, k2, ..., kT]
+pos0 = p
+head sampling = off
+run(T)
+commit(T)
+mtp.prefill(final_R_all, nxt, T, p)
+```
+
+Then repeat with frontier `kT` if the block exceeds T. This is almost the same shape as `read_windows`; the difference is that the first row begins at the live decode frontier rather than inside a prompt array.
+
+## K1-F implementation boundary
+
+A safe first prototype should remain **engine-internal and opt-in**, not an API feature. It should:
+
+1. be available only in `--serve` diagnostic/research mode;
+2. accept exactly one known next token;
+3. operate only when no batch-slot transition is in flight;
+4. reuse the existing verifier run/commit path;
+5. reuse the existing MTP prefill path;
+6. report enough state/position evidence to compare with control;
+7. refuse Vision/multimodal sequences initially unless position handling is explicitly proven;
+8. never silently fall back to a different semantic path.
+
+Only after exactness is demonstrated should a block form or server/API planner be considered.
+
 ## Interaction with tools / JSON
 
 Potential deterministic spans include:
