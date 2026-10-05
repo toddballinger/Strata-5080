@@ -74,7 +74,7 @@ class OpenClawRequestShapes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tok = ByteTokenizer()
-        cls.engine = MockEngine(tok, "</think>\n\nok", max_context=16384)
+        cls.engine = MockEngine(tok, "ok", max_context=16384)
         cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         cls.httpd = serve(cls.svc, port=0)
         cls.port = cls.httpd.server_address[1]
