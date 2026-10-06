@@ -187,3 +187,46 @@ same agent benchmark suite
 ```
 
 The decision metric is which architecture completes more useful agent work per hour on a 16 GB RTX 5080, not which has the largest isolated token/s number.
+
+
+## Cross-project research synchronization
+
+For every external inference finding reviewed for this project:
+
+1. check both `toddballinger/Strata-5080` and `toddballinger/ninfer-5080`;
+2. fold into an existing issue when the engineering question is already owned;
+3. create a new issue only for a genuinely distinct hypothesis;
+4. inspect open PRs in both repositories and annotate any PR whose evidence contract, implementation assumptions or acceptance criteria are affected;
+5. update the relevant R&D/control priority board so the finding changes execution order only when evidence justifies it;
+6. preserve architecture boundaries: MoE/expert/PLE work belongs to Strata unless a portable mechanism is demonstrated; dense-model CUDA/KV work belongs to NInfer unless independently relevant to Strata;
+7. keep **131072 configured context and ~118K occupied prompt** as the minimum serious long-context qualification target, with short prompts retained only as diagnostic controls.
+
+### Current execution order — 2026-10-06
+
+1. **#2 — C1/C2 RTX 5080 qualification**: active first hardware gate.
+2. **#10 — probabilistic MTP + rejection-sampling semantics**: bounded parallel research; does not displace #2.
+3. **#11 — pack-aware prefill staging + long-context QSA/top-k**: P1 research; establish C1 short/32K/64K/~118K baseline, then qualify candidate routes. Does not displace #2.
+4. **#3 — elastic C1↔C2 memory/admission planner**: implementation blocked until #2 proves a real memory/residency bottleneck.
+5. **#4 — OpenClaw tool/API compatibility**: independent correctness lane.
+6. **#5 — hybrid semantic execution**: P2 research until value measurement justifies promotion.
+
+Queue changes must be evidence-driven. New external throughput numbers alone do not reorder the queue.
+
+### New watch-derived workstreams
+
+#### P1-D — Probabilistic MTP / rejection sampling — #10
+
+Keep semantics-first qualification independent:
+- prove exact target distribution with an independent oracle;
+- temperature sweep on the RTX 5080;
+- short + ~118K occupied prompt;
+- only after qualification consider reduced draft vocabulary, adaptive depth/verify width, or sparse rejection-sampling optimizations.
+
+#### P1-E — Pack-aware prefill and long-context attention — #11
+
+Qualify:
+- byte/pack-aware prefill staging;
+- ring/chunk selection against actual VRAM and expert-pack size;
+- long-context QSA/top-k route crossover;
+- cold prefill / TTFT at short, 32K, 64K and ~118K occupied input;
+- interaction with C2 only after #2 establishes the serving baseline.
