@@ -32,8 +32,9 @@ Two consequences, both of which the harness enforces:
   a slot, whether two slots were ever non-idle at the same time, and what the surviving lane does when the other ends
   or is cancelled. Restart cost itself is `tools/ab_engine.py`'s business and belongs with the GPU window.
 - **A plain C1-vs-C2 ratio mixes two effects**: adding a lane, and losing the MTP drafts that C1 has. That is why
-  `c2mtp` is a third arm. `tools/pi_c1c2_compare.py` prints the `c2mtp`-against-`c2` ratio separately and says which
-  part of the difference is the drafts.
+  `c2mtp` is a third arm. Every non-C1 arm is compared against the C1 arm of its own context class, and the report
+  prints a separate `c2mtp`-against-`c2` table - the same two slots with a drafter and without one - which is the
+  drafts' share on its own.
 
 Because the guard refuses to run when the server disagrees, every run file records the serving count the server
 reported before any traffic was sent.
@@ -42,16 +43,16 @@ reported before any traffic was sent.
 
 | number | what it is | where it comes from |
 |---|---|---|
-| **queue delay** | how long a request waits before the engine starts it | the server's own per-request `queue_s` from `GET /api/requests` when the API monitor is on; otherwise `GET /metrics` `live.queued` integrated over the campaign at the sampling interval. The server does not echo a client request id, so a record is tied to a lane by waiting, not by identity: the longest queue of the campaign goes to the lane with the largest client TTFT. The raw records are kept in the run file so that attribution can be checked by hand |
+| **queue delay** | how long a request waits before the engine starts it | the server's own per-request `queue_s`, read from `GET /api/requests?id=` - which needs the server started with `--api-monitor`, because it is off by default (`serve/server.py`). The server does not echo a client request id, so a record is tied to a lane by **content**: every lane's prompt carries its own nonce (`[session A]`, `[session B]`) and the detail form returns the request text. A record that carries one nonce is that lane's; a record that carries two, or none, is matched to neither. When the monitor is off, or nothing matches, the lane's `queue_delay_s` stays `null` and `queue_delay_source` says why - an estimate is not written into a field named after a measurement. `queue_delay_record` names the record the number came from, so it can be checked by hand |
 | **TTFT** | the client's: request sent → first useful streamed token (content, reasoning, or a tool-call argument) | the client's own clock |
-| **model TTFT** | TTFT minus the queue delay: what the engine itself took | derived |
-| **decode tok/s** | per lane, decode only, as the server counts it | the `timings` of the last streamed chunk (`predicted_per_second`) |
-| **client tok/s** | per lane, whole lane, gaps and prefill included | tokens ÷ the client's own wall time |
-| **aggregate tok/s** | all lanes together | tokens ÷ summed decode seconds |
-| **useful work** | tasks whose checks all passed (below), 1.0 each; partial credit is recorded but never counted as done | the scorer |
-| **useful work per minute** | useful work ÷ campaign wall minutes | the decision metric |
-| **slot overlap seconds** | seconds with two slots non-idle in two samples in a row | `/metrics` `live.slots[].state` |
-| **VRAM / RAM peak** | highest sampled value during the campaign | `/metrics` `hardware`, falling back to `/v1/status` `machine` |
+| **model TTFT** | TTFT minus that lane's queue delay: what the engine itself took | derived, and `null` whenever the queue delay is `null` |
+| **decode tok/s** | per lane, decode only, as the server counts it | every step's `timings`: `predicted_n` summed over the lane's steps over `decode_ms` summed over the same steps. One step's rate is that step's; the last chunk of a four-step lane says nothing about the other three |
+| **per-slot decode** | those same tokens over the sum of the lanes' decode seconds | derived - what one slot is worth while it decodes |
+| **aggregate decode** | all lanes' tokens over the campaign's wall seconds | derived - the number that rises while each user waits longer, which is why it is not the decision metric |
+| **useful work** | tasks whose six checks all passed, 1.0 each; partial credit is recorded beside it and never counted as done | the scorer |
+| **useful work per minute** | completed tasks ÷ campaign wall minutes | the decision metric |
+| **slot overlap seconds** | seconds with two slots non-idle in two samples in a row, with no gap wider than the sampling interval between them | `/metrics` `live.slots[].state`. `live.running` counts *requests*, not slots, so it is recorded separately as `inflight_overlap_s` and is never the two-slot evidence |
+| **VRAM / RAM peak** | highest sampled value during the campaign | `/metrics` `hardware`, which reports **bytes**, converted to the MiB and GiB the field names claim; falling back to `/v1/status` `machine`, which is already in MiB/GiB |
 
 Queue delay is separated from TTFT on purpose. Under C1 the second request waits for the first to finish, so its
 client TTFT contains the whole wait; under C2 it should not. Reporting one number would hide the thing being measured.
@@ -87,39 +88,80 @@ near that many tokens, and the server's own `prompt_tokens` in the run file is w
 
 ## Running it
 
-Dry-run by default - without `--run` it prints the plan and opens no connection at all, not even `/v1/status`.
+`--dry-run` prints the plan and opens no connection at all, not even `/v1/status`; without it the campaign runs.
 
 ```
-python tools/pi_c1c2_bench.py --arm c2 --expect-serving 2                      # the plan, nothing sent
-python tools/pi_c1c2_bench.py --arm c2 --expect-serving 2 --run                 # one campaign, short prompts
-python tools/pi_c1c2_bench.py --arm c2 --expect-serving 2 --context-class 64k --repeat 2 --run
-python tools/pi_c1c2_bench.py --arm c2 --expect-serving 2 --cancel-lane B --cancel-after 20 --run
+python tools/pi_c1c2_bench.py --arm c2 --dry-run                                # the plan, nothing sent
+python tools/pi_c1c2_bench.py --arm c2                                          # one campaign, short prompts
+python tools/pi_c1c2_bench.py --arm c2 --context-class 64k --repeat 2           # a bigger class, second repetition
+python tools/pi_c1c2_bench.py --arm c2 --cancel-lane B --cancel-after 20        # the cancellation fixture
 python tools/pi_c1c2_compare.py 'bench/results/rtx5080-pi-c1c2/*.json' --min-repeats 3
 ```
 
 It never starts, stops or reconfigures a server. Changing arms means restarting on that arm's configuration, which is
 `tools/ab_engine.py`'s job and needs a GPU window of its own. `--expect-serving` is not a formality: a run whose
-server reports a different number stops before sending anything, so a mislabelled arm cannot produce evidence.
+server reports a different number stops before sending anything, so a mislabelled arm cannot produce evidence. It
+defaults to what the arm claims (1 for `c1`, 2 for `c2` and `c2mtp`), and naming a number that contradicts the arm is
+refused rather than quietly obeyed.
 
-Run files are `bench/results/rtx5080-pi-c1c2/run-<arm>-<class>-<stamp>.json` and `.md`. Home, user and host names, IP
-addresses and the API key are replaced by placeholders before anything is written (the same redaction
-`tools/strata_bench.py` uses).
+Nothing about the arm is taken on trust either. `--batch-mtp` is not in `/v1/status`, so the run file records what the
+engine said about drafts on the campaign's own requests (`draft_n`, `draft_n_accepted` in `timings`): a `c2mtp` run
+whose requests report no drafts at all is written as NOT verified, and a `c2` run that reports drafts is written as
+contradicted. `--confirm-batch-mtp` records how the operator checked it by hand when the engine reports nothing.
+
+The harness bounds itself. `--timeout` is the quiet-socket limit of one read, `--campaign-deadline` bounds the whole
+campaign, and a lane cut off by `--cancel-lane` is stopped at the socket, not between steps. A lane whose tool call
+arrives as something other than an object - the model controls those bytes - costs that lane a check and is recorded;
+it does not end the campaign. Reads are confined to this checkout, `grep` is `git grep` with a timeout and an output
+cap, and nothing is written.
+
+Run files are `bench/results/rtx5080-pi-c1c2/run-<arm>-<class>-<stamp>-r<repeat>[-tag].json` and `.md`; the repeat is
+in the name because the gate counts distinct repeats, not files. Home, user and host names, IP addresses and the API
+key are replaced by placeholders before anything is written (the same redaction `tools/strata_bench.py` uses, with the
+key itself added to it), and a plain-HTTP `--url` that is not loopback is refused unless `--allow-remote` says the key
+may travel in clear text.
+
+## Checking the harness before any GPU time is spent
+
+`python3 tools/test_pi_c1c2_bench.py` (89 tests, no GPU, no downloads) runs the harness against a stub server whose
+answers are built from the shapes `serve/server.py` and `serve/telemetry.py` actually send - `/v1/status`
+(`concurrency.serving`, `context.max_positions`, `machine` in MiB), `/metrics` (`live.slots[].state`, `hardware` in
+bytes), `/api/requests` in its list and `?id=` forms, and streamed `chat.completions` chunks with fragmented tool
+calls, `usage`, `timings` and a final `[DONE]`. It covers the things a wrong harness gets wrong quietly: a stream that
+ends inside a tool call, a lane that is cancelled and must stop, a submission whose `path` is an object, a queue record
+that belongs to the other lane, bytes written under a `_mib` name, and a `PROMOTE` built on partial credit.
 
 ## The gate
 
 `tools/pi_c1c2_compare.py` prints medians and ranges per arm and context class, the ratios to the C1 arm of the same
 class, and a recommendation. **A recommendation is not the decision** - the decision is written by hand in the issue
-with the run files next to it. It DEFERs rather than guesses when something is missing:
+with the run files next to it. It fails closed: anything that is not in the files is DEFER, not assumed.
 
-- at least three controlled repetitions per arm, alternating order;
-- no undeclared tool call, no tool call whose arguments were not JSON, no request error, and the serving count the arm
-  claims;
-- C2 completes at least as many tasks as C1 - fewer completed tasks is a REJECT whatever the throughput says;
-- a C2 run that actually held two slots non-idle at once (a run that never did has not tested concurrency);
-- a cancellation run where closing one lane leaves the other finishing;
-- each lane still decoding at a usable share of its C1 rate - if both lanes get slower, that is contention, not
-  concurrency, whatever the aggregate says;
-- and, to promote, a gain in useful work per wall-clock minute outside the noise band (5 % by default).
+REJECT - something went wrong:
+
+- an undeclared tool call, a request error, a tool call whose arguments were not an object, a stream that ended inside
+  a tool call, a lane that stopped inside the harness, or a guard the server contradicted (including a
+  `concurrency.serving` that is not the arm's);
+- a cancellation fixture whose surviving lane did not finish;
+- C1 completing more tasks than C2 - fewer completed tasks is a REJECT whatever the throughput says;
+- each lane decoding under `--min-lane-retention` of its C1 rate: that is contention, not concurrency.
+
+DEFER - something is not yet shown:
+
+- fewer than `--min-repeats` **distinct** `--repeat` values in either arm - files are not repetitions;
+- no C1 baseline **of the same context class**: a 64k C2 run is never compared against a `short` C1 run;
+- the runs of the two arms not naming one and the same model;
+- an arm label the server's own numbers did not confirm (`batch_mtp.verified` false);
+- any C2 run that never showed two non-idle slots from `live.slots[].state`, or any C2 run whose lane queue delay is
+  not tied to that lane by its nonce - a median cannot cover for a run that shows nothing;
+- neither arm completing a task: partial credit is printed beside the decision and buys nothing, so a comparison of
+  nothing with nothing is not a result;
+- a gain inside `--promote-margin` (5 % by default), or a gain whose per-run ranges still overlap - the noise the runs
+  themselves show has to be cleared, not just a fixed percentage.
+
+A run taken with `--cancel-lane` is a fixture, not a measurement: one lane is cut off on purpose, so its numbers are
+structurally low. Fixtures are checked for the cancellation gate and kept out of the medians the ratio is taken from,
+so running the mandated fixture cannot drag its own arm down.
 
 The correctness and cancellation fixtures reuse what upstream already has rather than duplicating it:
 `tools/early_close_test.py` (an early client close, alone and with a background request), `tools/batch_test.py` (slot
