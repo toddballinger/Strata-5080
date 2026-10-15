@@ -880,6 +880,14 @@ class OutputParser:
         self.buf = ""
         self.lead = False
         self.schemas = {t.get("name"): t for t in tools or []}
+        # Responses namespace tools use namespace.member in the template, while
+        # Qwen may emit namespace__member. Alias only explicitly declared names.
+        for tool in tools or []:
+            name = tool.get("name")
+            if isinstance(name, str) and "." in name:
+                namespace, member = name.rsplit(".", 1)
+                if namespace and member:
+                    self.schemas.setdefault(namespace + "__" + member, tool)
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
@@ -1061,6 +1069,10 @@ class OutputParser:
                 if b < 0:
                     return out
                 name = rest[a + 10:b]
+                if name not in self.schemas:
+                    # Never announce or stream arguments for a tool absent from this request.
+                    self.ss = "blocked"
+                    return out
                 self.scall = ToolCall(name=name, arguments={})
                 props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
                 self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
@@ -1068,6 +1080,8 @@ class OutputParser:
                 args("{")
                 self.sp += b + 1
                 self.ss = "between"
+            elif self.ss == "blocked":
+                return out
             elif self.ss == "between":
                 stripped = rest.lstrip()
                 self.sp += len(rest) - len(stripped)
@@ -1377,7 +1391,7 @@ class OutputParser:
                 self.buf = self.buf[i + drop:]
                 batch, self.batch = self.batch, False
                 out += self._finish_call(body)
-                if batch and out[-1].kind == "tool_call":
+                if batch and out and out[-1].kind == "tool_call":
                     self.state, self.lead = "call", False
 
     def finish(self, reason: str | None = None) -> list[Event]:
@@ -1405,6 +1419,14 @@ class OutputParser:
             return out
         if self.state == "reasoning" and self.buf == THINK_END:   # the output ends on a held `</think>`: its end
             self.buf, self.state = "", "content"
+        if self.state == "call" and self.scall is None:
+            candidate = self.buf.lstrip()
+            if candidate.startswith(FUNC_START) and ">" in candidate:
+                name = candidate[len(FUNC_START):candidate.index(">")].strip()
+                if name not in self.schemas:
+                    self.buf = ""
+                    self._reset_scan()
+                    return out
         if self.buf:
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
             kind = {"reasoning": "reasoning", "rcall": "reasoning", "content": "content"}.get(self.state, "content")
@@ -1418,6 +1440,10 @@ class OutputParser:
         parse is the text it is instead of an error that ends the request."""
         name = body.strip()[len(FUNC_START):].split(">", 1)[0].strip()
         bare, self.bare = self.bare, False
+        if name not in self.schemas:
+            self._reset_scan()
+            self.state, self.lead = "content", True
+            return []
         try:
             call = parse_tool_call(body, self.schemas.get(name))
         except ValueError:
