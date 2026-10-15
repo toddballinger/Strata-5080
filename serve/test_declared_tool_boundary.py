@@ -27,6 +27,14 @@ class DeclaredToolBoundary(unittest.TestCase):
         for stream in (False, True):
             found = events(BAD[:-24], DECLARED, stream, 1)
             self.assertFalse(any(e.kind.startswith("tool_") for e in found), found)
+    def test_declared_namespace_alias(self):
+        declared = [{"name": "mcp__websearch.web_search", "parameters": {"type": "object",
+                     "properties": {"query": {"type": "string"}}}}]
+        output = "<tool_call>\n<function=mcp__websearch__web_search>\n<parameter=query>\nstrata\n</parameter>\n</function>\n</tool_call>"
+        for stream in (False, True):
+            found = events(output, declared, stream, 1)
+            self.assertTrue(any(e.kind == "tool_call" and
+                                e.call.name == "mcp__websearch__web_search" for e in found), found)
     def test_declared_preserved(self):
         for stream in (False, True):
             found = events(GOOD, DECLARED, stream, 1)
