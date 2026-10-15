@@ -35,6 +35,33 @@ class DeclaredToolBoundary(unittest.TestCase):
             found = events(output, declared, stream, 1)
             self.assertTrue(any(e.kind == "tool_call" and
                                 e.call.name == "mcp__websearch__web_search" for e in found), found)
+    def test_mixed_declared_and_undeclared_calls(self):
+        for stream in (False, True):
+            for step in (1, 7, 4096):
+                with self.subTest(stream=stream, step=step):
+                    for payload in (GOOD + BAD, BAD + GOOD):
+                        found = events(payload, DECLARED, stream, step)
+                        calls = [e.call.name for e in found if e.kind == "tool_call"]
+                        self.assertEqual(calls, ["write"], found)
+                        self.assertFalse(any(e.kind == "tool_start" and
+                                             e.call.name != "write" for e in found), found)
+
+    def test_recovery_json_rejects_undeclared(self):
+        payload = '<tool_call>{"name": "delete_everything", "arguments": {"path": "/"}}</tool_call>'
+        for stream in (False, True):
+            parser = OutputParser(thinking=False, tools=DECLARED, stream_tools=stream, recover=True)
+            found = []
+            for i in range(0, len(payload), 3):
+                found.extend(parser.feed(payload[i:i+3]))
+            found.extend(parser.finish())
+            self.assertFalse(any(e.kind.startswith("tool_") for e in found), found)
+
+    def test_cutoff_unknown_call_never_started(self):
+        for stream in (False, True):
+            parser = OutputParser(thinking=False, tools=DECLARED, stream_tools=stream)
+            found = parser.feed(BAD[:-10]) + parser.finish("length")
+            self.assertFalse(any(e.kind.startswith("tool_") for e in found), found)
+
     def test_declared_preserved(self):
         for stream in (False, True):
             found = events(GOOD, DECLARED, stream, 1)
