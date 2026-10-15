@@ -880,6 +880,14 @@ class OutputParser:
         self.buf = ""
         self.lead = False
         self.schemas = {t.get("name"): t for t in tools or []}
+        # Responses namespace tools use namespace.member in the template, while
+        # Qwen may emit namespace__member. Alias only explicitly declared names.
+        for tool in tools or []:
+            name = tool.get("name")
+            if isinstance(name, str) and "." in name:
+                namespace, member = name.rsplit(".", 1)
+                if namespace and member:
+                    self.schemas.setdefault(namespace + "__" + member, tool)
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
